@@ -1,8 +1,8 @@
 /**
  * The escalation vocabulary and choreography shared by every sandbox-enforcing
  * tool family (`@deepseek-ai/dsh-tool-bash`, `@deepseek-ai/dsh-tool-fs`): the
- * strictly-wider ladder, the argument-pairing validation, the model-facing
- * denial/hint markers, and {@link approveEscalation} — the ordered fail-closed
+ * strictly-wider ladder, the model-facing denial/hint markers, and
+ * {@link approveEscalation} — the ordered fail-closed
  * sequence that resolves a `sandbox_permissions` request through a
  * user-approval channel BEFORE anything executes. One home keeps the two
  * families' approval ordering and verbatim error texts from drifting apart.
@@ -39,26 +39,6 @@ export const WIDER_MODES: Record<string, readonly SandboxMode[]> = {
  * while a narrower-switched session stays confined with no lever).
  */
 export const ESCALATION_TARGETS: readonly SandboxMode[] = ['workspace-write', 'danger-full-access']
-
-/**
- * Validate the escalation argument pairing a tool schema cannot express:
- * `sandbox_permissions` and `justification` travel together — an approval
- * prompt without a reason, or a reason driving nothing, is a malformed ask —
- * and the justification must be a non-empty sentence.
- * @param sandboxPermissions - the raw `sandbox_permissions` argument, if given.
- * @param justification - the raw `justification` argument, if given.
- */
-export function validateEscalationArgs(sandboxPermissions: string | undefined, justification: string | undefined): void {
-  if (sandboxPermissions !== undefined && justification === undefined) {
-    throw new Error('invalid escalation: sandbox_permissions requires a justification')
-  }
-  if (justification !== undefined && sandboxPermissions === undefined) {
-    throw new Error('invalid escalation: justification is only valid together with sandbox_permissions')
-  }
-  if (justification !== undefined && justification.trim().length === 0) {
-    throw new Error('invalid justification: expected a non-empty sentence')
-  }
-}
 
 /**
  * The model-facing denial marker — the one vocabulary both enforcing families
@@ -132,8 +112,13 @@ export interface EscalationApproval<A = object, C = string> {
 export interface EscalationRequest {
   /** The requested target mode (schema-pinned to {@link ESCALATION_TARGETS} when advertised). */
   requestedMode: string
-  /** The model's one-sentence reason, shown verbatim to the user inside the audit reason. */
-  justification: string
+  /**
+   * The model's one-sentence reason, shown verbatim to the user inside the
+   * audit reason. Required for a strictly wider request (an approval prompt
+   * without a reason is a malformed ask); irrelevant for a non-widening one,
+   * which resolves as a no-op before the reason is ever read.
+   */
+  justification: string | undefined
   /** The call's effective mode (session override ?? composition default) the request must strictly widen. */
   effectiveMode: SandboxMode
   /** The family's noun for the escalated action in user-facing texts (`command` for bash, `operation` for fs). */
@@ -141,15 +126,24 @@ export interface EscalationRequest {
 }
 
 /**
- * Resolve a sandbox-escalation request BEFORE anything executes: check strict
+ * Resolve a sandbox-escalation request BEFORE anything executes: judge strict
  * widening against the call's effective mode, then resolve the approval
  * channel, then map every outcome — the ordered fail-closed sequence both
- * enforcing families share. Returns the granted mode to stamp onto exactly
- * this call; throws the distinct verbatim text for every other path (a
- * non-widening request, a missing approval service, an agent-less execution,
- * a rejection, a cancellation, an unanswerable ask) — the tool registry turns
- * the throw into the call's isError result, and nothing has run. A
- * non-widening request never prompts a human.
+ * enforcing families share. A NON-WIDENING request resolves as a no-op grant
+ * of the call's current effective mode: nothing widens, nobody is prompted,
+ * and the call simply proceeds under the confinement it already had. Models
+ * trained on other harnesses' shell conventions (notably the
+ * `with_escalated_permissions` + `justification` pair) habitually attach
+ * escalation fields to calls whose effective mode already suffices; erroring
+ * on that habit burns a failed call teaching a lesson some model families
+ * reliably fail to learn, while ignoring it is behaviorally identical to the
+ * call the model should have made. A WIDENING request keeps the fail-closed
+ * sequence: it demands a non-empty justification, a composed approval
+ * service, and an agent to route through, and throws the distinct verbatim
+ * text for every other path (a missing or blank justification, a missing
+ * approval service, an agent-less execution, a rejection, a cancellation, an
+ * unanswerable ask) — the tool registry turns the throw into the call's
+ * isError result, and nothing has run.
  * @param request - the escalation to judge (see {@link EscalationRequest}).
  * @param approval - the approval ingredients the tool holds (see {@link EscalationApproval}).
  * @returns the granted mode, consumed by the one call that asked.
@@ -158,9 +152,18 @@ export async function approveEscalation<A, C>(request: EscalationRequest, approv
   const { requestedMode: mode, effectiveMode, justification, subject } = request
   // Strict widening is an EXECUTION check against the call's effective mode —
   // deliberately not a schema constraint (the enum is the closed target
-  // vocabulary; the effective mode is per-call truth).
+  // vocabulary; the effective mode is per-call truth). A non-widening request
+  // is a no-op, not an error: see the function doc.
   if (!(WIDER_MODES[effectiveMode] ?? []).includes(mode as SandboxMode)) {
-    throw new Error(`sandbox escalation to "${mode}" is not strictly wider than this call's current "${effectiveMode}" mode`)
+    return effectiveMode
+  }
+  // A real (strictly wider) ask still demands a reason: an approval prompt
+  // without one is a malformed ask.
+  if (justification === undefined) {
+    throw new Error('invalid escalation: sandbox_permissions requires a justification')
+  }
+  if (justification.trim().length === 0) {
+    throw new Error('invalid justification: expected a non-empty sentence')
   }
   if (approval.approver === undefined) {
     throw new Error(`sandbox escalation to "${mode}" requires approval, but no approval service is composed`)

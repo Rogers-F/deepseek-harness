@@ -565,11 +565,12 @@ describe('sandbox escalation through ctx.approval', () => {
 
     for (const args of [
       { command: 'Write-Output ok', description: 'd', sandbox_permissions: 'workspace-write' },
-      { command: 'Write-Output ok', description: 'd', justification: 'why' },
       { command: 'Write-Output ok', description: 'd', sandbox_permissions: 'workspace-write', justification: ' ' },
     ]) {
       expect((await call(ctx, 'pwsh', args)).isError).toBe(true)
     }
+    // A lone justification drives nothing and is ignored.
+    expect((await call(ctx, 'pwsh', { command: 'Write-Output ok', description: 'd', justification: 'why' })).isError).not.toBe(true)
   })
 
   it('the escalation fields and the confined-mode clauses stay out of sandbox-less compositions', async () => {
@@ -581,7 +582,7 @@ describe('sandbox escalation through ctx.approval', () => {
     expect(schema.parameters.properties).not.toHaveProperty('sandbox_permissions')
   })
 
-  it('rejects injected escalation without a sandbox and non-widening escalation without prompting', async () => {
+  it('rejects injected escalation without a sandbox; a non-widening escalation is a no-op that never prompts', async () => {
     const plain = await setup()
     expect(text(await call(plain.ctx, 'pwsh', escalate))).toContain('not available in this composition')
 
@@ -589,7 +590,7 @@ describe('sandbox escalation through ctx.approval', () => {
     const prompted = vi.fn()
     ctx.on('approval/request', () => { prompted(); return Promise.resolve<ApprovalOutcome>('allowed-once') })
     const result = await call(ctx, 'pwsh', { ...escalate, sandbox_permissions: 'workspace-write' }, sandboxAgent('workspace-write'))
-    expect(text(result)).toContain('not strictly wider')
+    expect(result.isError).not.toBe(true)
     expect(prompted).not.toHaveBeenCalled()
 
     const malformed = sandboxAgent()
@@ -597,7 +598,8 @@ describe('sandbox escalation through ctx.approval', () => {
       type: 'sandbox/mode',
       data: { mode: 'unknown-mode' },
     })
-    expect(text(await call(ctx, 'pwsh', escalate, malformed))).toContain('not strictly wider')
+    expect((await call(ctx, 'pwsh', escalate, malformed)).isError).not.toBe(true)
+    expect(prompted).not.toHaveBeenCalled()
   })
 
   it('fails closed when approval cannot be routed', async () => {

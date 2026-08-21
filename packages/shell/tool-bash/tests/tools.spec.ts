@@ -585,7 +585,7 @@ describe('sandbox escalation through the generic task producer', () => {
     await expect(ctx.plugin(ToolBash)).rejects.toThrow('tool-bash: the mounted bash executor confines but ctx.sandboxPolicy is missing')
   })
 
-  it('advertises the sandbox fields and validates their pairing', async () => {
+  it('advertises the sandbox fields and validates a widening ask (a lone justification is ignored)', async () => {
     const { ctx } = await setupSandboxed()
     const schema = ctx.tools.schemas().find(item => item.name === 'bash')!
     const properties = schema.parameters.properties as Record<string, { enum?: string[] }>
@@ -594,14 +594,15 @@ describe('sandbox escalation through the generic task producer', () => {
 
     for (const args of [
       { command: 'true', description: 'd', sandbox_permissions: 'workspace-write' },
-      { command: 'true', description: 'd', justification: 'why' },
       { command: 'true', description: 'd', sandbox_permissions: 'workspace-write', justification: ' ' },
     ]) {
       expect((await call(ctx, 'bash', args)).isError).toBe(true)
     }
+    // A lone justification drives nothing and is ignored.
+    expect((await call(ctx, 'bash', { command: 'true', description: 'd', justification: 'why' })).isError).not.toBe(true)
   })
 
-  it('rejects injected escalation without a sandbox and non-widening escalation without prompting', async () => {
+  it('rejects injected escalation without a sandbox; a non-widening escalation is a no-op that never prompts', async () => {
     const plain = await setup()
     expect(text(await call(plain, 'bash', escalate))).toContain('not available in this composition')
 
@@ -609,7 +610,7 @@ describe('sandbox escalation through the generic task producer', () => {
     const prompted = vi.fn()
     ctx.on('approval/request', () => { prompted(); return Promise.resolve<ApprovalOutcome>('allowed-once') })
     const result = await call(ctx, 'bash', { ...escalate, sandbox_permissions: 'workspace-write' }, sandboxAgent('workspace-write'))
-    expect(text(result)).toContain('not strictly wider')
+    expect(result.isError).not.toBe(true)
     expect(prompted).not.toHaveBeenCalled()
 
     const malformed = sandboxAgent()
@@ -617,7 +618,8 @@ describe('sandbox escalation through the generic task producer', () => {
       type: 'sandbox/mode',
       data: { mode: 'unknown-mode' },
     })
-    expect(text(await call(ctx, 'bash', escalate, malformed))).toContain('not strictly wider')
+    expect((await call(ctx, 'bash', escalate, malformed)).isError).not.toBe(true)
+    expect(prompted).not.toHaveBeenCalled()
   })
 
   it('fails closed when approval cannot be routed', async () => {

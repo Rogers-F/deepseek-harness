@@ -913,11 +913,17 @@ describe('sandbox escalation API (write/edit)', () => {
     expect(text(result)).toContain('no agent to route it through')
   })
 
-  it('rejects the escalation argument pairing (one field without the other)', async () => {
+  it('a widening ask without a justification fails closed; non-widening and lone-justification asks are no-ops', async () => {
     const { ctx } = await setupConfining()
-    const missing = await call(ctx, 'write', { file_path: 'a.txt', content: 'x', sandbox_permissions: 'workspace-write' }, escalationAgent())
+    const missing = await call(ctx, 'write', { file_path: 'a.txt', content: 'x', sandbox_permissions: 'danger-full-access' }, escalationAgent())
     expect(missing.isError).toBe(true)
     expect(text(missing)).toContain('sandbox_permissions requires a justification')
+    // Escalating to the mode the call already has is a no-op grant, not an error.
+    const noop = await call(ctx, 'write', { file_path: 'b.txt', content: 'x', sandbox_permissions: 'workspace-write' }, escalationAgent())
+    expect(noop.isError).not.toBe(true)
+    // A lone justification drives nothing and is ignored.
+    const lone = await call(ctx, 'write', { file_path: 'c.txt', content: 'x', justification: 'orphan reason' }, escalationAgent())
+    expect(lone.isError).not.toBe(true)
   })
 
   it('sandbox_permissions under a non-confining backend fails closed (unadvertised field still reaches execute)', async () => {
